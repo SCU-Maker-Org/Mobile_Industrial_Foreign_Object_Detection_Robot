@@ -23,6 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "IMU406.h"
+#include "Tracked.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -42,7 +43,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
-
+/* g_ros_rx_byte 已移到 Tracked.c 里定义 */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -190,6 +191,9 @@ void SysTick_Handler(void)
   HAL_IncTick();
   /* USER CODE BEGIN SysTick_IRQn 1 */
 
+  /* ★ 底盘调度：1ms 一次，内部按 10ms / 10ms(偏移5) / 50ms 分频 */
+  Tracked_Tick();
+
   /* USER CODE END SysTick_IRQn 1 */
 }
 
@@ -229,16 +233,19 @@ void USART2_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
-// 串口中断回调函数
+/**
+  * @brief 串口接收完成回调
+  * @note  USART1: ROS 下行指令（逐字节喂状态机）
+  *        USART2: IMU406 帧（29 字节）
+  */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == USART1) {
-
+    Tracked_FeedByte(g_ros_rx_byte);
+    HAL_UART_Receive_IT(&huart1, &g_ros_rx_byte, 1);
   }
   else if (huart->Instance == USART2) {
     IMU406_Rx_ISR();
-  }
-  else if (huart->Instance == USART3) {
   }
 }
 /* USER CODE END 1 */

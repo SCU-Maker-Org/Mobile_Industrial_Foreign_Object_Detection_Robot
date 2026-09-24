@@ -99,18 +99,20 @@ void PID_Speed_Controller_Init(PID_Speed_Controller *pid,
  * @return output 输出
  */
 float PID_Speed_Controller_Update(PID_Speed_Controller *pid,
-                                  float target_val,
-                                  float current_val) {
+                                  float target_val, float current_val) {
     pid->error = target_val - current_val;
-    pid->output += pid->Kp * (pid->error - pid->last_error) +
-                   pid->Ki * pid->error +
-                   pid->Kd * (pid->error + pid->prev_error - 2 * pid->last_error);
+    pid->integral += pid->error;
+    // 积分限幅
+    if (pid->integral > pid->integral_limit) pid->integral = pid->integral_limit;
+    if (pid->integral < -pid->integral_limit) pid->integral = -pid->integral_limit;
 
-    pid->prev_error = pid->last_error;
+    pid->output = pid->Kp * pid->error
+                + pid->Ki * pid->integral
+                + pid->Kd * (pid->error - pid->last_error);
+
     pid->last_error = pid->error;
 
     if (pid->output > pid->output_limit) pid->output = pid->output_limit;
     if (pid->output < -pid->output_limit) pid->output = -pid->output_limit;
-
     return pid->output;
 }

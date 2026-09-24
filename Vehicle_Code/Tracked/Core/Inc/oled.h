@@ -8,20 +8,19 @@
 #include "font.h"
 #include "string.h"
 #include <stdint-gcc.h>
+#include "i2c.h"          /* ★ 需要包含 i2c.h，因为要用到 hi2c2 / hi2c1 */
 
-///////////////////////////////////////////////////////////////////////////////////////////////////////////
-#define   OLED_GPIO_CLK_ENABLE()         __HAL_RCC_GPIOA_CLK_ENABLE()
+/* ==================================================================== */
+/*  ★★★  OLED 使用的 I2C 句柄：改这里就能全局切换 I2C1 / I2C2  ★★★   */
+/* ==================================================================== */
+/*  当前使用 I2C2（PB10=SCL, PB11=SDA）                                   */
+#define OLED_I2C_HANDLE        (&hi2c2)
 
-#define   GPIOx_OLED_PORT               GPIOB
-#define   OLED_SCK_PIN                  OLED_SCL
-#define   OLED_SCK_ON()                 HAL_GPIO_WritePin(GPIOx_OLED_PORT, OLED_SCK_PIN, GPIO_PIN_SET)
-#define   OLED_SCK_OFF()                HAL_GPIO_WritePin(GPIOx_OLED_PORT, OLED_SCK_PIN, GPIO_PIN_RESET)
-#define   OLED_SCK_TOGGLE()             HAL_GPIO_TogglePin(GPIOx_OLED_PORT, OLED_SCK_PIN)
-#define   OLED_SDA_PIN                  OLED_SDA
-#define   OLED_SDA_ON()                 HAL_GPIO_WritePin(GPIOx_OLED_PORT, OLED_SDA_PIN, GPIO_PIN_SET)
-#define   OLED_SDA_OFF()                HAL_GPIO_WritePin(GPIOx_OLED_PORT, OLED_SDA_PIN, GPIO_PIN_RESET)
-#define   OLED_SDA_TOGGLE()             HAL_GPIO_TogglePin(GPIOx_OLED_PORT, OLED_SDA_PIN)
-///////////////////////////////////////////////////////////////////////////////////////////////////////////
+/*  如果你以后改回 I2C1（PB8=SCL, PB9=SDA），把上面一行注释掉，         */
+/*  把下面一行取消注释即可：                                              */
+/* #define OLED_I2C_HANDLE     (&hi2c1) */
+
+/* 注意：本驱动使用硬件 I2C，之前软件 I2C 的 GPIO 宏已删除。 */
 
 // 颜色模式定义
 typedef enum {

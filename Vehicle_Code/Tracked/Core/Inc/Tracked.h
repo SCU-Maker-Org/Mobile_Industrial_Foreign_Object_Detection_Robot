@@ -11,16 +11,16 @@
 /* ================================================================== */
 /*                     机械参数（根据实际小车修改）                     */
 /* ================================================================== */
-#define TRACKED_WHEEL_BASE      0.20f   /* 左右轮距，单位 m */
+#define TRACKED_WHEEL_BASE      0.23f   /* 左右轮距，单位 m */
 #define TRACKED_WHEEL_DIAMETER  0.065f  /* 轮径，单位 m */
 #define TRACKED_ENCODER_PPR     13.0f   /* 编码器每圈脉冲数（单相） */
 #define TRACKED_GEAR_RATIO      30.0f   /* 减速比 */
-#define TRACKED_DT              0.01f   /* 控制周期 10ms */
+#define TRACKED_DT              0.05f   /* 控制周期 20ms */
 
 /* ================================================================== */
 /*                     任务周期（ms）                                   */
 /* ================================================================== */
-#define TRACKED_PID_PERIOD_MS   10U     /* PID 周期 */
+#define TRACKED_PID_PERIOD_MS   50U     /* PID 周期 */
 #define TRACKED_IMU_PERIOD_MS   10U     /* IMU 周期 */
 #define TRACKED_IMU_OFFSET_MS   5U      /* IMU 与 PID 错开 5ms */
 #define TRACKED_ROS_PERIOD_MS   50U     /* ROS 发送周期 */
@@ -28,7 +28,7 @@
 /* ================================================================== */
 /*                     安全：指令超时                                   */
 /* ================================================================== */
-#define TRACKED_CMD_TIMEOUT_MS  200U    /* 200ms 未收到指令就停车 */
+#define TRACKED_CMD_TIMEOUT_MS  60000U
 
 /* ================================================================== */
 /*                     ROS 上行：里程计+IMU 帧（50ms 发一次）           */
@@ -98,11 +98,11 @@ typedef struct {
     float target_vl, target_vr;
     float current_vl, current_vr;
 
-    /* ---- 编码器 ---- */
-    int32_t last_left_cnt;
-    int32_t last_right_cnt;
-    int32_t total_left_cnt;
-    int32_t total_right_cnt;
+    /* ---- 编码器（增量值，每次读取后归零） ---- */
+    int32_t delta_left_cnt;      /* 本次采样周期内的左轮增量 */
+    int32_t delta_right_cnt;     /* 本次采样周期内的右轮增量 */
+    int32_t total_left_cnt;      /* 累计总计数（用于里程计/显示） */
+    int32_t total_right_cnt;     /* 累计总计数（用于里程计/显示） */
 
     /* ---- PID ---- */
     PID_Speed_Controller pid_left;
@@ -138,8 +138,11 @@ extern Tracked_t g_tracked;
 /* 初始化 */
 void Tracked_Init(void);
 
-/* 主循环调用（非阻塞，内部按时间片调度） */
+/* 主循环调用（非阻塞，内部按时间片调度）—— 用 SysTick 方案时可不调 */
 void Tracked_Loop(void);
+
+/* ★ SysTick 调度入口：在 SysTick_Handler 里调用（1ms 一次） */
+void Tracked_Tick(void);
 
 /* 设置目标速度（由 ROS 接收或上层调用） */
 void Tracked_SetTargetSpeed(float v, float w);
@@ -150,7 +153,7 @@ void Tracked_ForwardKinematics(float vl, float vr, float *v, float *w);
 /* 逆运动学：车体 v/w → 左右轮线速度 */
 void Tracked_InverseKinematics(float v, float w, float *vl, float *vr);
 
-/* 读取编码器并更新轮速 */
+/* 读取编码器增量（读后立即归零），并直接计算轮速 */
 void Tracked_UpdateEncoder(void);
 
 /* PID 更新（内部调用） */
@@ -181,5 +184,10 @@ void Tracked_FeedByte(uint8_t byte);
 /* 获取目标速度（调试/监控用） */
 float Tracked_GetTargetV(void);
 float Tracked_GetTargetW(void);
+
+/* ================================================================== */
+/*                     USART1 接收缓冲（供中断文件使用）                */
+/* ================================================================== */
+extern uint8_t g_ros_rx_byte;
 
 #endif //TRACKED_TRACKED_H
