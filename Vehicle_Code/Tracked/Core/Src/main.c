@@ -26,6 +26,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "oled.h"
+#include "Tracked.h"
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -89,25 +91,78 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_I2C1_Init();
   MX_TIM2_Init();
   MX_TIM3_Init();
   MX_TIM4_Init();
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
+  MX_I2C2_Init();
   /* USER CODE BEGIN 2 */
+
+  OLED_Init();
+  OLED_NewFrame();
+  OLED_PrintString(0, 0, "Tracked Init...", &font16x16, OLED_COLOR_NORMAL);
+  OLED_ShowFrame();
+  HAL_Delay(300);
+
+  /* ---- 底盘初始化 ---- */
+  Tracked_Init();
+
+  /* ---- 设置目标速度：前进 0.2 m/s ---- */
+  Tracked_SetTargetSpeed(0.05f, 0.0f);
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1)
-  {
+  while (1) {
+    /* ============================================================ */
+    /*  1. 设置目标速度（持续刷新，防止超时清零）                     */
+    /* ============================================================ */
+    Tracked_SetTargetSpeed(0.05f, 0.0f);   /* 前进 0.05 m/s，不转向 */
+
+    /* ============================================================ */
+    /*  2. OLED 显示实时状态                                         */
+    /* ============================================================ */
+    {
+      char buf[24];
+
+      OLED_NewFrame();
+
+      /* 第 0 行：左右轮编码器原始计数 */
+      snprintf(buf, sizeof(buf), "L:%d", (int)g_tracked.delta_left_cnt);
+      OLED_PrintString(0, 0, buf, &font16x16, OLED_COLOR_NORMAL);
+
+      snprintf(buf, sizeof(buf), "R:%d", (int)g_tracked.delta_right_cnt);
+      OLED_PrintString(64, 0, buf, &font16x16, OLED_COLOR_NORMAL);
+
+      /* 第 1 行：左右轮实时线速度（由编码器算得） */
+      snprintf(buf, sizeof(buf), "vl:%.3f", g_tracked.current_vl);
+      OLED_PrintString(0, 16, buf, &font16x16, OLED_COLOR_NORMAL);
+
+      snprintf(buf, sizeof(buf), "vr:%.3f", g_tracked.current_vr);
+      OLED_PrintString(64, 16, buf, &font16x16, OLED_COLOR_NORMAL);
+
+      /* 第 2 行：目标速度 */
+      snprintf(buf, sizeof(buf), "tvl:%.3f", g_tracked.target_vl);
+      OLED_PrintString(0, 32, buf, &font16x16, OLED_COLOR_NORMAL);
+
+      snprintf(buf, sizeof(buf), "tvr:%.3f", g_tracked.target_vr);
+      OLED_PrintString(64, 32, buf, &font16x16, OLED_COLOR_NORMAL);
+
+      /* 第 3 行：PID 输出 */
+      snprintf(buf, sizeof(buf), "ol:%.0f", g_tracked.pid_left.output);
+      OLED_PrintString(0, 48, buf, &font16x16, OLED_COLOR_NORMAL);
+
+      snprintf(buf, sizeof(buf), "or:%.0f", g_tracked.pid_right.output);
+      OLED_PrintString(64, 48, buf, &font16x16, OLED_COLOR_NORMAL);
+
+      OLED_ShowFrame();
+    }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
   }
-
   /* USER CODE END 3 */
 }
 
@@ -161,7 +216,6 @@ void SystemClock_Config(void)
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
   while (1)
   {
@@ -179,8 +233,6 @@ void Error_Handler(void)
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
-  /* User can add his own implementation to report the file name and line number,
-     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */

@@ -14,9 +14,9 @@ uint8_t OLED_GRAM[OLED_PAGE][OLED_COLUMN];
 
 // 初始化命令
 uint8_t CMD_Data[] = {
-        0xAE, 0x00, 0x10, 0x40, 0xB0, 0x81, 0xFF, 0xA1, 0xA6, 0xA8, 0x3F,
-        0xC8, 0xD3, 0x00, 0xD5, 0x80, 0xD8, 0x05, 0xD9, 0xF1, 0xDA, 0x12,
-        0xD8, 0x30, 0x8D, 0x14, 0xAF
+    0xAE, 0x00, 0x10, 0x40, 0xB0, 0x81, 0xFF, 0xA1, 0xA6, 0xA8, 0x3F,
+    0xC8, 0xD3, 0x00, 0xD5, 0x80, 0xD8, 0x05, 0xD9, 0xF1, 0xDA, 0x12,
+    0xD8, 0x30, 0x8D, 0x14, 0xAF
 };
 
 // ========================== 底层通信函数（I2C版本） ==========================
@@ -29,7 +29,7 @@ void WriteCmd(void)
     uint8_t i = 0;
     for(i = 0; i < 27; i++)
     {
-        HAL_I2C_Mem_Write(&hi2c1, 0x78, 0x00, I2C_MEMADD_SIZE_8BIT, CMD_Data + i, 1, 0x100);
+        HAL_I2C_Mem_Write(OLED_I2C_HANDLE, 0x78, 0x00, I2C_MEMADD_SIZE_8BIT, CMD_Data + i, 1, 0x100);
     }
 }
 
@@ -38,7 +38,7 @@ void WriteCmd(void)
  */
 void OLED_WR_CMD(uint8_t cmd)
 {
-    HAL_I2C_Mem_Write(&hi2c1, 0x78, 0x00, I2C_MEMADD_SIZE_8BIT, &cmd, 1, 0x100);
+    HAL_I2C_Mem_Write(OLED_I2C_HANDLE, 0x78, 0x00, I2C_MEMADD_SIZE_8BIT, &cmd, 1, 0x100);
 }
 
 /**
@@ -46,7 +46,7 @@ void OLED_WR_CMD(uint8_t cmd)
  */
 void OLED_WR_DATA(uint8_t data)
 {
-    HAL_I2C_Mem_Write(&hi2c1, 0x78, 0x40, I2C_MEMADD_SIZE_8BIT, &data, 1, 0x100);
+    HAL_I2C_Mem_Write(OLED_I2C_HANDLE, 0x78, 0x40, I2C_MEMADD_SIZE_8BIT, &data, 1, 0x100);
 }
 
 /**
@@ -54,9 +54,11 @@ void OLED_WR_DATA(uint8_t data)
  */
 void OLED_Send(uint8_t *data, uint8_t len)
 {
-    HAL_I2C_Mem_Write(&hi2c1, 0x78, 0x40, I2C_MEMADD_SIZE_8BIT, data, len, 0x100);
+    HAL_I2C_Mem_Write(OLED_I2C_HANDLE, 0x78, 0x40, I2C_MEMADD_SIZE_8BIT, data, len, 0x100);
 }
 
+// ========================== OLED驱动函数 ==========================
+// 下面从 OLED_Init() 开始，全部保持不变，不用改
 // ========================== OLED驱动函数 ==========================
 
 /**

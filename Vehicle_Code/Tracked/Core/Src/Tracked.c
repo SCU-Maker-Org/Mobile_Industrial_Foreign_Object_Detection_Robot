@@ -16,21 +16,24 @@
 Tracked_t g_tracked;
 
 /* ================================================================== */
+/*                     USART1 接收缓冲（供 it.c 使用）                  */
+/* ================================================================== */
+uint8_t g_ros_rx_byte = 0;
+
+/* ================================================================== */
 /*                     私有变量                                         */
 /* ================================================================== */
 static uint32_t s_last_pid_tick = 0;
 static uint32_t s_last_imu_tick = 0;
 static uint32_t s_last_ros_tick = 0;
-
-/* USART1 单字节接收缓冲（供中断使用） */
-static uint8_t s_ros_rx_byte = 0;
+static uint32_t s_tick_cnt     = 0;   /* SysTick 计数 */
 
 /* ================================================================== */
 /*                     私有函数声明                                     */
 /* ================================================================== */
 static void Tracked_SetPWM(int16_t left, int16_t right);
-static int32_t Tracked_ReadEncoderLeft(void);
-static int32_t Tracked_ReadEncoderRight(void);
+static int32_t Tracked_ReadEncoderLeft(void);   /* 读取并归零，返回增量 */
+static int32_t Tracked_ReadEncoderRight(void);  /* 读取并归零，返回增量 */
 static void Tracked_SendBytes(const uint8_t *buf, uint16_t len);
 static uint8_t Tracked_Checksum(const uint8_t *buf, uint16_t len);
 static void Tracked_ParseCmd(const uint8_t *buf);
@@ -51,8 +54,8 @@ void Tracked_Init(void)
     t->dt             = TRACKED_DT;
 
     /* PID 参数（需实际调） */
-    PID_Speed_Controller_Init(&t->pid_left,  10.0f, 0.5f, 0.0f, 100.0f, 1000.0f);
-    PID_Speed_Controller_Init(&t->pid_right, 10.0f, 0.5f, 0.0f, 100.0f, 1000.0f);
+    PID_Speed_Controller_Init(&t->pid_left,  500.0f, 150.0f, 500.0f, 100.0f, 999.0f);
+    PID_Speed_Controller_Init(&t->pid_right, 800.0f, 150.0f, 500.0f, 100.0f, 999.0f);
 
     /* 启动 PWM */
     HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_1);
@@ -61,6 +64,10 @@ void Tracked_Init(void)
     /* 启动编码器 */
     HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
     HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
+
+    /* 上电把 CNT 清零，作为增量起点 */
+    __HAL_TIM_SET_COUNTER(&htim2, 0);
+    __HAL_TIM_SET_COUNTER(&htim3, 0);
 
     /* IMU 初始化（会开启 USART2 接收中断） */
     IMU406_Init();
@@ -79,12 +86,50 @@ void Tracked_Init(void)
     s_last_pid_tick = HAL_GetTick();
     s_last_imu_tick = HAL_GetTick();
     s_last_ros_tick = HAL_GetTick();
+    s_tick_cnt      = 0;
 
     t->enabled = 1;
 }
 
 /* ================================================================== */
-/*                     主循环调度                                       */
+/*                     SysTick 调度（1ms 调用一次）                    */
+/* ================================================================== */
+void Tracked_Tick(void)
+{
+    s_tick_cnt++;
+
+    /* ---- 每 1ms：指令超时检查 ---- */
+    if ((HAL_GetTick() - g_tracked.last_cmd_tick) > TRACKED_CMD_TIMEOUT_MS) {
+        if (!g_tracked.cmd_timeout) {
+            g_tracked.cmd_timeout = 1;
+            Tracked_SetTargetSpeed(0.0f, 0.0f);   /* 超时停车 */
+        }
+    }
+
+    /* ---- 每 20ms：PID（偏移 0） ---- */
+    if ((s_tick_cnt % TRACKED_PID_PERIOD_MS) == 0U) {
+        Tracked_UpdateEncoder();   /* 读编码器增量 + 算轮速 */
+        Tracked_PID_Update();      /* PID 控制 */
+        Tracked_UpdateOdom();      /* 里程计 */
+    }
+
+    /* ---- 每 10ms：IMU（偏移 5ms） ---- */
+    if ((s_tick_cnt % TRACKED_IMU_PERIOD_MS) == TRACKED_IMU_OFFSET_MS) {
+        Tracked_UpdateIMU();
+    }
+
+    /* ---- 每 50ms：ROS ---- */
+    if ((s_tick_cnt % TRACKED_ROS_PERIOD_MS) == 0U) {
+        Tracked_SendToROS();
+    }
+
+    if (s_tick_cnt % 200 == 0) {
+        HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);  /* 每 500ms 翻转 */
+    }
+}
+
+/* ================================================================== */
+/*                     主循环调度（轮询版，可不用）                     */
 /* ================================================================== */
 void Tracked_Loop(void)
 {
@@ -94,11 +139,11 @@ void Tracked_Loop(void)
     if ((now - g_tracked.last_cmd_tick) > TRACKED_CMD_TIMEOUT_MS) {
         if (!g_tracked.cmd_timeout) {
             g_tracked.cmd_timeout = 1;
-            Tracked_SetTargetSpeed(0.0f, 0.0f);   /* 超时停车 */
+            Tracked_SetTargetSpeed(0.0f, 0.0f);
         }
     }
 
-    /* ---- 10ms PID ---- */
+    /* ---- 20ms PID ---- */
     if ((now - s_last_pid_tick) >= TRACKED_PID_PERIOD_MS) {
         s_last_pid_tick += TRACKED_PID_PERIOD_MS;
         Tracked_UpdateEncoder();
@@ -150,31 +195,28 @@ void Tracked_SetTargetSpeed(float v, float w)
 }
 
 /* ================================================================== */
-/*                     读取编码器并计算轮速                             */
+/*                     读取编码器增量并直接计算轮速                     */
+/*                                                                     */
+/*  说明：                                                              */
+/*    每次读取时直接读取当前 CNT 值，然后立即清零。                      */
+/*    读取到的值即为本次采样周期内的增量脉冲数。                         */
+/*    用增量值直接计算轮线速度，不做累计运算。                           */
 /* ================================================================== */
 void Tracked_UpdateEncoder(void)
 {
     Tracked_t *t = &g_tracked;
 
-    int32_t l = Tracked_ReadEncoderLeft();
-    int32_t r = Tracked_ReadEncoderRight();
-
-    int32_t dl = l - t->last_left_cnt;
-    int32_t dr = r - t->last_right_cnt;
-
-    t->last_left_cnt  = l;
-    t->last_right_cnt = r;
-
-    t->total_left_cnt  += dl;
-    t->total_right_cnt += dr;
+    /* ★ 读取编码器增量（读后立即归零，返回清零前的值） */
+    t->delta_left_cnt  = Tracked_ReadEncoderLeft();
+    t->delta_right_cnt = Tracked_ReadEncoderRight();
 
     /* 每圈脉冲数 = PPR * 减速比 * 4（四倍频） */
     float ppr_total = t->encoder_ppr * t->gear_ratio * 4.0f;
     float wheel_circumference = 3.1415926f * t->wheel_diameter;
 
-    /* 脉冲 → 轮线速度 (m/s) */
-    t->current_vl = ((float)dl / ppr_total) * wheel_circumference / t->dt;
-    t->current_vr = ((float)dr / ppr_total) * wheel_circumference / t->dt;
+    /* ★ 直接用本次增量计算轮线速度 (m/s) */
+    t->current_vl = ((float)t->delta_left_cnt  / ppr_total) * wheel_circumference / t->dt;
+    t->current_vr = ((float)t->delta_right_cnt / ppr_total) * wheel_circumference / t->dt;
 
     /* 正运动学 */
     Tracked_ForwardKinematics(t->current_vl, t->current_vr,
@@ -208,7 +250,6 @@ void Tracked_UpdateIMU(void)
 {
     Tracked_t *t = &g_tracked;
 
-    /* IMU406 数据由中断解析到全局变量，这里直接读 */
     t->roll  = (float)IMU406_Get_Roll()  / 100.0f;
     t->pitch = (float)IMU406_Get_Pitch() / 100.0f;
     t->yaw   = (float)IMU406_Get_Yaw()   / 100.0f;
@@ -224,12 +265,10 @@ void Tracked_UpdateOdom(void)
     float v = t->current_v;
     float w = t->current_w;
 
-    /* 中点积分 */
     t->odom_x   += v * cosf(t->odom_yaw) * t->dt;
     t->odom_y   += v * sinf(t->odom_yaw) * t->dt;
     t->odom_yaw += w * t->dt;
 
-    /* 归一化到 [-pi, pi] */
     while (t->odom_yaw >  3.1415926f) t->odom_yaw -= 2.0f * 3.1415926f;
     while (t->odom_yaw < -3.1415926f) t->odom_yaw += 2.0f * 3.1415926f;
 }
@@ -268,8 +307,8 @@ void Tracked_Enable(uint8_t en)
     g_tracked.enabled = en;
     if (!en) {
         Tracked_SetPWM(0, 0);
-        PID_Speed_Controller_Init(&g_tracked.pid_left,  10.0f, 0.5f, 0.0f, 100.0f, 1000.0f);
-        PID_Speed_Controller_Init(&g_tracked.pid_right, 10.0f, 0.5f, 0.0f, 100.0f, 1000.0f);
+        PID_Speed_Controller_Init(&g_tracked.pid_left,  10.0f, 0.5f, 0.0f, 100.0f, 999.0f);
+        PID_Speed_Controller_Init(&g_tracked.pid_right, 10.0f, 0.5f, 0.0f, 100.0f, 999.0f);
     }
 }
 
@@ -277,19 +316,11 @@ void Tracked_Enable(uint8_t en)
 /*                     ROS 下行接收接口                                 */
 /* ================================================================== */
 
-/* 启动 USART1 接收中断 */
 void Tracked_StartRosRx(void)
 {
-    HAL_UART_Receive_IT(&huart1, &s_ros_rx_byte, 1);
+    HAL_UART_Receive_IT(&huart1, &g_ros_rx_byte, 1);
 }
 
-/* 获取 USART1 接收缓冲地址（供中断文件使用） */
-uint8_t *Tracked_GetRosRxBuf(void)
-{
-    return &s_ros_rx_byte;
-}
-
-/* 逐字节接收状态机 */
 void Tracked_FeedByte(uint8_t byte)
 {
     Tracked_t *t = &g_tracked;
@@ -327,8 +358,6 @@ void Tracked_FeedByte(uint8_t byte)
 
     case TRACKED_RX_WAIT_DATA:
         buf[t->rx_index++] = byte;
-        /* 数据区 = v(4)+w(4)+cks(1) = 9 字节
-           从 index=3 收到 index=11，共 9 字节 */
         if (t->rx_index >= 12U) {
             t->rx_state = TRACKED_RX_WAIT_TAIL;
         }
@@ -350,7 +379,6 @@ void Tracked_FeedByte(uint8_t byte)
     }
 }
 
-/* 获取目标速度（调试用） */
 float Tracked_GetTargetV(void) { return g_tracked.target_v; }
 float Tracked_GetTargetW(void) { return g_tracked.target_w; }
 
@@ -358,16 +386,14 @@ float Tracked_GetTargetW(void) { return g_tracked.target_w; }
 /*                     私有函数实现                                     */
 /* ================================================================== */
 
-/* 解析速度指令帧 */
 static void Tracked_ParseCmd(const uint8_t *buf)
 {
-    /* 校验和：buf[0..10] 异或 == buf[11] */
     uint8_t sum = 0;
     for (uint8_t i = 0; i < 11U; i++) {
         sum ^= buf[i];
     }
     if (sum != buf[11]) {
-        return;                 /* 校验失败，丢弃 */
+        return;
     }
 
     float v, w;
@@ -381,14 +407,13 @@ static void Tracked_ParseCmd(const uint8_t *buf)
     g_tracked.cmd_received_flag = 1;
 }
 
-/* 设置 PWM 并控制方向引脚 */
 static void Tracked_SetPWM(int16_t left, int16_t right)
 {
     uint16_t pwm_l = (left  < 0) ? (uint16_t)(-left)  : (uint16_t)left;
     uint16_t pwm_r = (right < 0) ? (uint16_t)(-right) : (uint16_t)right;
 
-    if (pwm_l > 65535) pwm_l = 65535;
-    if (pwm_r > 65535) pwm_r = 65535;
+    if (pwm_l > 999) pwm_l = 999;
+    if (pwm_r > 999) pwm_r = 999;
 
     /* 左轮方向 */
     if (left >= 0) {
@@ -401,36 +426,55 @@ static void Tracked_SetPWM(int16_t left, int16_t right)
 
     /* 右轮方向 */
     if (right >= 0) {
-        HAL_GPIO_WritePin(RIGHT_1_GPIO_Port, RIGHT_1_Pin, GPIO_PIN_SET);
-        HAL_GPIO_WritePin(RIGHT_2_GPIO_Port, RIGHT_2_Pin, GPIO_PIN_RESET);
-    } else {
         HAL_GPIO_WritePin(RIGHT_1_GPIO_Port, RIGHT_1_Pin, GPIO_PIN_RESET);
         HAL_GPIO_WritePin(RIGHT_2_GPIO_Port, RIGHT_2_Pin, GPIO_PIN_SET);
+    } else {
+        HAL_GPIO_WritePin(RIGHT_1_GPIO_Port, RIGHT_1_Pin, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(RIGHT_2_GPIO_Port, RIGHT_2_Pin, GPIO_PIN_RESET);
     }
 
     __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, pwm_l);
     __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, pwm_r);
 }
 
-/* 读左编码器（TIM2） */
+/* ★ 读左编码器：读方向 + 计数，然后清零，返回带符号的增量 */
 static int32_t Tracked_ReadEncoderLeft(void)
 {
-    return (int32_t)__HAL_TIM_GET_COUNTER(&htim2);
+    int32_t cnt = (int32_t)__HAL_TIM_GET_COUNTER(&htim2);
+
+    /* 判断当前计数方向：向下计数时，CNT 是从 0 往下溢出的，需还原为负数 */
+    if (__HAL_TIM_IS_TIM_COUNTING_DOWN(&htim2)) {
+        if (cnt > 32767) {
+            cnt = cnt - 65536;
+        }
+    }
+
+    __HAL_TIM_SET_COUNTER(&htim2, 0);   /* 读完立即清零 */
+    return cnt;
 }
 
-/* 读右编码器（TIM3） */
+/* ★ 读右编码器：读方向 + 计数，然后清零，返回带符号的增量 */
 static int32_t Tracked_ReadEncoderRight(void)
 {
-    return (int32_t)__HAL_TIM_GET_COUNTER(&htim3);
+    int32_t cnt = (int32_t)__HAL_TIM_GET_COUNTER(&htim3);
+
+    /* 判断当前计数方向：向下计数时，CNT 是从 0 往下溢出的，需还原为负数 */
+    if (__HAL_TIM_IS_TIM_COUNTING_DOWN(&htim3)) {
+        if (cnt > 32767) {
+            cnt = cnt - 65536;
+        }
+    }
+
+    __HAL_TIM_SET_COUNTER(&htim3, 0);   /* 读完立即清零 */
+    return -cnt;
 }
 
-/* 通过 USART1 发送字节 */
+/* 非阻塞发送（在 SysTick 里调用，不能阻塞） */
 static void Tracked_SendBytes(const uint8_t *buf, uint16_t len)
 {
-    HAL_UART_Transmit(&huart1, (uint8_t *)buf, len, 100);
+    HAL_UART_Transmit_IT(&huart1, (uint8_t *)buf, len);
 }
 
-/* 校验和 */
 static uint8_t Tracked_Checksum(const uint8_t *buf, uint16_t len)
 {
     uint8_t sum = 0;
