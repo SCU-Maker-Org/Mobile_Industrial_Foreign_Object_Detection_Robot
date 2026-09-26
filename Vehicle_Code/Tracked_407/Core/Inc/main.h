@@ -65,6 +65,10 @@ void Error_Handler(void);
 #define Motor_C_Encoder_A_GPIO_Port GPIOA
 #define Motor_C_Encoder_B_Pin GPIO_PIN_1
 #define Motor_C_Encoder_B_GPIO_Port GPIOA
+#define IMU406_TX_Pin GPIO_PIN_2
+#define IMU406_TX_GPIO_Port GPIOA
+#define IMU406_RX_Pin GPIO_PIN_3
+#define IMU406_RX_GPIO_Port GPIOA
 #define HEAD_LED_Pin GPIO_PIN_5
 #define HEAD_LED_GPIO_Port GPIOC
 #define BLUE_LED_Pin GPIO_PIN_8
@@ -81,6 +85,16 @@ void Error_Handler(void);
 #define USART3_ROS_TX_GPIO_Port GPIOD
 #define USART3_ROS_RX_Pin GPIO_PIN_9
 #define USART3_ROS_RX_GPIO_Port GPIOD
+#define OLED_DC_Pin GPIO_PIN_11
+#define OLED_DC_GPIO_Port GPIOD
+#define OLED_RES_Pin GPIO_PIN_12
+#define OLED_RES_GPIO_Port GPIOD
+#define OLED_SDA_Pin GPIO_PIN_13
+#define OLED_SDA_GPIO_Port GPIOD
+#define OLED_SCL_Pin GPIO_PIN_14
+#define OLED_SCL_GPIO_Port GPIOD
+#define BEEP_Pin GPIO_PIN_8
+#define BEEP_GPIO_Port GPIOA
 #define Motor_A_Encoder_A_Pin GPIO_PIN_15
 #define Motor_A_Encoder_A_GPIO_Port GPIOA
 #define Motor_A_Encoder_B_Pin GPIO_PIN_3
