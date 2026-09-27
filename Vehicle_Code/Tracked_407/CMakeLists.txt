@@ -39,6 +39,9 @@ add_executable(${CMAKE_PROJECT_NAME}
         Core/Inc/BMP.h
         Core/Inc/IMU406.h
         Core/Src/IMU406.c
+        Core/Inc/alarm.h
+        Core/Inc/alarm.h
+        Core/Src/alarm.c
 )
 
 # Add STM32CubeMX generated sources

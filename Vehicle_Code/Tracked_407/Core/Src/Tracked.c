@@ -3,12 +3,7 @@
 //
 
 #include "Tracked.h"
-#include "tim.h"
-#include "usart.h"
-#include "IMU406.h"
-#include "main.h"
-#include <string.h>
-#include <math.h>
+
 
 /* ================================================================== */
 /*                     全局小车对象                                     */
@@ -43,8 +38,21 @@ void Tracked_Init(void)
     t->gear_ratio     = TRACKED_GEAR_RATIO;
     t->dt             = TRACKED_DT;
 
-    PID_Speed_Controller_Init(&t->pid_left,  80.0f, 20.0f, 0.0f, 200.0f, 999.0f);
-    PID_Speed_Controller_Init(&t->pid_right, 80.0f, 20.0f, 0.0f, 200.0f, 999.0f);
+    /* ---- 内环：轮子级 PID ---- */
+    PID_Speed_Controller_Init(&t->pid_left,
+                              PID_WHEEL_KP, PID_WHEEL_KI, PID_WHEEL_KD,
+                              PID_WHEEL_INTEGRAL_LIM, PID_WHEEL_OUTPUT_LIM);
+    PID_Speed_Controller_Init(&t->pid_right,
+                              PID_WHEEL_KP, PID_WHEEL_KI, PID_WHEEL_KD,
+                              PID_WHEEL_INTEGRAL_LIM, PID_WHEEL_OUTPUT_LIM);
+
+    /* ---- 外环：车体级 PID ---- */
+    PID_Speed_Controller_Init(&t->pid_body_v,
+                              PID_BODY_V_KP, PID_BODY_V_KI, PID_BODY_V_KD,
+                              PID_BODY_V_INTEGRAL_LIM, PID_BODY_V_OUTPUT_LIM);
+    PID_Speed_Controller_Init(&t->pid_body_w,
+                              PID_BODY_W_KP, PID_BODY_W_KI, PID_BODY_W_KD,
+                              PID_BODY_W_INTEGRAL_LIM, PID_BODY_W_OUTPUT_LIM);
 
     HAL_TIM_PWM_Start(MOTOR_A_TIM_IN1, MOTOR_A_CH_IN1);
     HAL_TIM_PWM_Start(MOTOR_A_TIM_IN2, MOTOR_A_CH_IN2);
@@ -60,8 +68,8 @@ void Tracked_Init(void)
     /* IMU 初始化 */
     IMU406_Init();
 
-    t->rx_state     = TRACKED_RX_WAIT_HEAD0;
-    t->rx_index     = 0;
+    t->rx_state      = TRACKED_RX_WAIT_HEAD0;
+    t->rx_index      = 0;
     t->last_cmd_tick = HAL_GetTick();
 
     Tracked_StartRosRx();
@@ -71,12 +79,13 @@ void Tracked_Init(void)
 }
 
 /* ================================================================== */
-/*                     SysTick 调度                                     */
+/*                     SysTick 调度（1kHz）                             */
 /* ================================================================== */
 void Tracked_Tick(void)
 {
     s_tick_cnt++;
 
+    /* 指令超时保护 */
     if ((HAL_GetTick() - g_tracked.last_cmd_tick) > TRACKED_CMD_TIMEOUT_MS) {
         if (!g_tracked.cmd_timeout) {
             g_tracked.cmd_timeout = 1;
@@ -84,10 +93,17 @@ void Tracked_Tick(void)
         }
     }
 
+    /* ---- 50ms 任务：PID + 里程计 ---- */
     if ((s_tick_cnt % TRACKED_PID_PERIOD_MS) == 0U) {
         Tracked_UpdateEncoder();
         Tracked_PID_Update();
         Tracked_UpdateOdom();
+        Tracked_SendOdom();
+    }
+
+    /* ---- 10ms 任务：IMU 发送（100Hz） ---- */
+    if ((s_tick_cnt % TRACKED_IMU_PERIOD_MS) == 0U) {
+        Tracked_SendImu();
     }
 }
 
@@ -112,7 +128,8 @@ void Tracked_SetTargetSpeed(float v, float w)
 {
     g_tracked.target_v = v;
     g_tracked.target_w = w;
-    Tracked_InverseKinematics(v, w, &g_tracked.target_vl, &g_tracked.target_vr);
+    /* 注意：target_vl/target_vr 不在这里计算，
+     * 因为车体级闭环会在 Tracked_PID_Update 里重新计算 */
 }
 
 /* ================================================================== */
@@ -146,10 +163,43 @@ void Tracked_PID_Update(void)
         return;
     }
 
-    float out_l = PID_Speed_Controller_Update(&t->pid_left,
-                                              t->target_vl, t->current_vl);
-    float out_r = PID_Speed_Controller_Update(&t->pid_right,
-                                              t->target_vr, t->current_vr);
+    /* ============================================================ */
+    /* 第 1 层：车体级 v/w 闭环                                     */
+    /* ============================================================ */
+
+    /* 角速度反馈：用 IMU 陀螺仪 z 轴（不受轮子打滑影响） */
+    float gyro_z = IMU406_Get_GyroZ_RadS();
+
+    /* 线速度反馈：用轮式里程计（IMU 加速度太噪，不能直接积分） */
+    float v_actual = t->current_v;
+
+    /* 车体级修正量 */
+    float v_corr = PID_Speed_Controller_Update(&t->pid_body_v,
+                                               t->target_v, v_actual);
+    float w_corr = PID_Speed_Controller_Update(&t->pid_body_w,
+                                               t->target_w, gyro_z);
+
+    /* 修正后的车体速度指令 */
+    float v_cmd = t->target_v + v_corr;
+    float w_cmd = t->target_w + w_corr;
+
+    /* ============================================================ */
+    /* 第 2 层：逆运动学，车体速度 → 左右轮速度                     */
+    /* ============================================================ */
+
+    float vl_target = v_cmd - (w_cmd * t->wheel_base * 0.5f);
+    float vr_target = v_cmd + (w_cmd * t->wheel_base * 0.5f);
+
+    /* 保存供调试用（OLED / 上位机读取） */
+    t->target_vl = vl_target;
+    t->target_vr = vr_target;
+
+    /* ============================================================ */
+    /* 第 3 层：轮子级线速度闭环                                    */
+    /* ============================================================ */
+
+    float out_l = PID_Speed_Controller_Update(&t->pid_left,  vl_target, t->current_vl);
+    float out_r = PID_Speed_Controller_Update(&t->pid_right, vr_target, t->current_vr);
 
     Tracked_SetPWM((int16_t)out_l, (int16_t)out_r);
 }
@@ -172,28 +222,43 @@ void Tracked_UpdateOdom(void)
 /* ================================================================== */
 /*                     向 ROS 发送                                       */
 /* ================================================================== */
-void Tracked_SendToROS(void)
+void Tracked_SendOdom(void)
 {
     Tracked_t *t = &g_tracked;
 
-    Tracked_ROS_Frame_t frame;
-    frame.header[0] = 0xAA;
-    frame.header[1] = 0x55;
+    Tracked_Odom_Frame_t frame;
+    frame.header[0] = TRACKED_UP_HEAD0;
+    frame.header[1] = TRACKED_UP_HEAD1;
+    frame.type      = TRACKED_UP_TYPE_ODOM;
     frame.x         = t->odom_x;
     frame.y         = t->odom_y;
     frame.yaw       = t->odom_yaw;
     frame.v         = t->current_v;
     frame.w         = t->current_w;
+    frame.timestamp_ms = HAL_GetTick();
+    frame.checksum  = Tracked_Checksum((uint8_t *)&frame, sizeof(frame) - 1);
 
-    /* 用 IMU406 的数据替代原来的 g_icm */
-    frame.roll      = (float)IMU406_Get_Roll()  / 100.0f;
-    frame.pitch     = (float)IMU406_Get_Pitch() / 100.0f;
-    frame.imu_yaw   = (float)IMU406_Get_Yaw()   / 100.0f;
+    Tracked_SendBytes((uint8_t *)&frame, sizeof(frame));
+}
 
-    frame.left_cnt  = t->total_left_cnt;
-    frame.right_cnt = t->total_right_cnt;
-    frame.checksum  = Tracked_Checksum((uint8_t *)&frame,
-                                       sizeof(frame) - 1);
+void Tracked_SendImu(void)
+{
+    Tracked_Imu_Frame_t frame;
+    frame.header[0] = TRACKED_UP_HEAD0;
+    frame.header[1] = TRACKED_UP_HEAD1;
+    frame.type      = TRACKED_UP_TYPE_IMU;
+
+    frame.gyro_x = IMU406_Get_GyroX_RadS();
+    frame.gyro_y = IMU406_Get_GyroY_RadS();
+    frame.gyro_z = IMU406_Get_GyroZ_RadS();
+
+    frame.acc_x  = IMU406_Get_AccX_m_s2();
+    frame.acc_y  = IMU406_Get_AccY_m_s2();
+    frame.acc_z  = IMU406_Get_AccZ_m_s2();
+
+    frame.yaw    = IMU406_Get_Yaw_Rad();
+    frame.timestamp_ms = HAL_GetTick();
+    frame.checksum = Tracked_Checksum((uint8_t *)&frame, sizeof(frame) - 1);
 
     Tracked_SendBytes((uint8_t *)&frame, sizeof(frame));
 }
@@ -203,13 +268,26 @@ void Tracked_Enable(uint8_t en)
     g_tracked.enabled = en;
     if (!en) {
         Tracked_SetPWM(0, 0);
-        PID_Speed_Controller_Init(&g_tracked.pid_left,  80.0f, 20.0f, 0.0f, 200.0f, 999.0f);
-        PID_Speed_Controller_Init(&g_tracked.pid_right, 80.0f, 20.0f, 0.0f, 200.0f, 999.0f);
+
+        /* 重置所有 PID */
+        PID_Speed_Controller_Init(&g_tracked.pid_left,
+                                  PID_WHEEL_KP, PID_WHEEL_KI, PID_WHEEL_KD,
+                                  PID_WHEEL_INTEGRAL_LIM, PID_WHEEL_OUTPUT_LIM);
+        PID_Speed_Controller_Init(&g_tracked.pid_right,
+                                  PID_WHEEL_KP, PID_WHEEL_KI, PID_WHEEL_KD,
+                                  PID_WHEEL_INTEGRAL_LIM, PID_WHEEL_OUTPUT_LIM);
+
+        PID_Speed_Controller_Init(&g_tracked.pid_body_v,
+                                  PID_BODY_V_KP, PID_BODY_V_KI, PID_BODY_V_KD,
+                                  PID_BODY_V_INTEGRAL_LIM, PID_BODY_V_OUTPUT_LIM);
+        PID_Speed_Controller_Init(&g_tracked.pid_body_w,
+                                  PID_BODY_W_KP, PID_BODY_W_KI, PID_BODY_W_KD,
+                                  PID_BODY_W_INTEGRAL_LIM, PID_BODY_W_OUTPUT_LIM);
     }
 }
 
 /* ================================================================== */
-/*                     ROS 接收                                          */
+/*                     ROS 接收（/cmd_vel）                             */
 /* ================================================================== */
 void Tracked_StartRosRx(void)
 {
@@ -292,11 +370,11 @@ static void Tracked_SetPWM(int16_t left, int16_t right)
     if (pwm_r > 999) pwm_r = 999;
 
     if (left >= 0) {
-        __HAL_TIM_SET_COMPARE(MOTOR_A_TIM_IN1, MOTOR_A_CH_IN1, pwm_l);
-        __HAL_TIM_SET_COMPARE(MOTOR_A_TIM_IN2, MOTOR_A_CH_IN2, 0);
-    } else {
         __HAL_TIM_SET_COMPARE(MOTOR_A_TIM_IN1, MOTOR_A_CH_IN1, 0);
         __HAL_TIM_SET_COMPARE(MOTOR_A_TIM_IN2, MOTOR_A_CH_IN2, pwm_l);
+    } else {
+        __HAL_TIM_SET_COMPARE(MOTOR_A_TIM_IN1, MOTOR_A_CH_IN1, pwm_l);
+        __HAL_TIM_SET_COMPARE(MOTOR_A_TIM_IN2, MOTOR_A_CH_IN2, 0);
     }
 
     if (right >= 0) {
@@ -313,7 +391,7 @@ static int32_t Tracked_ReadEncoderLeft(void)
     int32_t cnt = (int32_t)__HAL_TIM_GET_COUNTER(MOTOR_A_ENCODER_TIM);
     if (cnt > 32767) cnt -= 65536;
     __HAL_TIM_SET_COUNTER(MOTOR_A_ENCODER_TIM, 0);
-    return cnt;
+    return -cnt;
 }
 
 static int32_t Tracked_ReadEncoderRight(void)
@@ -326,7 +404,7 @@ static int32_t Tracked_ReadEncoderRight(void)
 
 static void Tracked_SendBytes(const uint8_t *buf, uint16_t len)
 {
-    HAL_UART_Transmit_IT(TRACKED_ROS_UART, (uint8_t *)buf, len);
+    HAL_UART_Transmit(TRACKED_ROS_UART, (uint8_t *)buf, len, 10);
 }
 
 static uint8_t Tracked_Checksum(const uint8_t *buf, uint16_t len)

@@ -29,6 +29,7 @@
 #include <string.h>
 #include "oled.h"
 #include "IMU406.h"
+#include "alarm.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -55,9 +56,9 @@ char oled_buf[32];
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-void OLED_Show_Speed(void);
-void OLED_Show_Attitude(void);
-void OLED_Show_IMU(void);
+void OLED_Show_Current_Speed(void);
+void OLED_Show_Target_Speed(void);
+void OLED_Show_Yaw(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -104,35 +105,41 @@ int main(void)
   MX_TIM10_Init();
   MX_TIM11_Init();
   MX_USART2_UART_Init();
+  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
   /* 初始化 OLED */
   OLED_Init();
   OLED_Clear();
 
-  /* 初始化履带底盘（内含 ICM20948_Init） */
+  /* 初始化履带底盘 */
   Tracked_Init();
 
+  /* 启动 YOLO 串口接收 */
+  YOLO_UART_Start();
 
-  /* ★ 静止 2 秒做 IMU 零偏校准（400 次 × 5ms = 2000ms） */
-  /* IMU 静止校准 */
-  OLED_ShowString(0, 0, (unsigned char *)"Calibrating IMU");
-  OLED_ShowString(0, 2, (unsigned char *)"Keep STILL...");
-  HAL_Delay(2000);
-  OLED_Clear();
-  OLED_ShowString(0, 0, (unsigned char *)"Calib OK!");
-  HAL_Delay(500);
-  OLED_Clear();
+  /* 系统完成初始化提示 */
+  System_Init_Alarm();
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+
+    // 找到物体后则进行报警
+    if (g_yolo_object_found_flag) {
+      g_yolo_object_found_flag = 0;
+      Object_Found_Alarm();
+    }
+
+    // OLED显示内容
     OLED_Clear();
-    Tracked_SetTargetSpeed(0.0f, 1.0f);
-    OLED_Show_Attitude();
-    OLED_Show_Speed();
+    OLED_Show_Current_Speed();
+    OLED_Show_Target_Speed();
+    OLED_Show_Yaw();
     HAL_Delay(100);
+
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -187,45 +194,41 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-void OLED_Show_Speed(void)
+void OLED_Show_Current_Speed(void)
 {
-  sprintf(oled_buf, "L:%d R:%d", (int)g_tracked.delta_left_cnt,
-                                (int)g_tracked.delta_right_cnt);
+  /* L:xxxx R:xxxx 共 16 字符，%-4d 左对齐补空格 */
+  sprintf(oled_buf, "L:%-4d R:%-4d",
+          (int)g_tracked.delta_left_cnt,
+          (int)g_tracked.delta_right_cnt);
   OLED_ShowString(0, 0, (unsigned char *)oled_buf);
 }
 
-void OLED_Show_Attitude(void)
+void OLED_Show_Target_Speed(void)
 {
-  int32_t yaw   = IMU406_Get_Yaw();
-  int32_t roll  = IMU406_Get_Roll();
-  int32_t pitch = IMU406_Get_Pitch();
+  int v_i = (int)(g_tracked.target_v);
+  int v_f = (int)((g_tracked.target_v - v_i) * 100);
+  if (v_f < 0) v_f = -v_f;
 
-  /* 整数部分 */
-  int yaw_i   = (int)(yaw   / 100);   /* 假设单位是 0.01°，可按需调整 */
-  int roll_i  = (int)(roll  / 100);
-  int pitch_i = (int)(pitch / 100);
+  int w_i = (int)(g_tracked.target_w);
+  int w_f = (int)((g_tracked.target_w - w_i) * 100);
+  if (w_f < 0) w_f = -w_f;
 
-  /* 小数部分（1 位） */
-  int yaw_f   = (int)(yaw   % 100);
-  int roll_f  = (int)(roll  % 100);
-  int pitch_f = (int)(pitch % 100);
+  /* Vt:x.xx Wt:x.xx 共 16 字符，长度固定 */
+  sprintf(oled_buf, "Vt:%d.%02d Wt:%d.%02d",
+          v_i, v_f, w_i, w_f);
+  OLED_ShowString(0, 1, (unsigned char *)oled_buf);
+}
 
-  /* 处理负数的小数部分 */
-  if (yaw_f   < 0) yaw_f   = -yaw_f;
-  if (roll_f  < 0) roll_f  = -roll_f;
-  if (pitch_f < 0) pitch_f = -pitch_f;
+void OLED_Show_Yaw(void)
+{
+  int32_t yaw = IMU406_Get_Yaw();
+  int yaw_i = (int)(yaw / 100);
+  int yaw_f = (int)(yaw % 100);
+  if (yaw_f < 0) yaw_f = -yaw_f;
 
-  /* 显示 yaw */
-  sprintf(oled_buf, "yaw:%d.%d  ", yaw_i, yaw_f / 10);
-  OLED_ShowString(0, 0, (unsigned char *)oled_buf);
-
-  /* 显示 roll */
-  sprintf(oled_buf, "rol:%d.%d  ", roll_i, roll_f / 10);
+  /* yaw:xxx.x 后面补 6 个空格，保证总长 16 字符 */
+  sprintf(oled_buf, "yaw:%d.%d      ", yaw_i, yaw_f / 10);
   OLED_ShowString(0, 2, (unsigned char *)oled_buf);
-
-  /* 显示 pitch */
-  sprintf(oled_buf, "pit:%d.%d  ", pitch_i, pitch_f / 10);
-  OLED_ShowString(0, 4, (unsigned char *)oled_buf);
 }
 /* USER CODE END 4 */
 

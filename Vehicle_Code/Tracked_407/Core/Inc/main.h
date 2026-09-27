@@ -95,6 +95,10 @@ void Error_Handler(void);
 #define OLED_SCL_GPIO_Port GPIOD
 #define BEEP_Pin GPIO_PIN_8
 #define BEEP_GPIO_Port GPIOA
+#define YOLO_TX_Pin GPIO_PIN_9
+#define YOLO_TX_GPIO_Port GPIOA
+#define YOLO_RX_Pin GPIO_PIN_10
+#define YOLO_RX_GPIO_Port GPIOA
 #define Motor_A_Encoder_A_Pin GPIO_PIN_15
 #define Motor_A_Encoder_A_GPIO_Port GPIOA
 #define Motor_A_Encoder_B_Pin GPIO_PIN_3

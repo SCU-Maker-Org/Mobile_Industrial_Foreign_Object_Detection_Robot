@@ -5,7 +5,7 @@
 #include "IMU406.h"
 
 /* ------------------------------------------------------------------ */
-/*                   接收状态机（私有变量，放在 .c 里）                 */
+/*                   接收状态机（私有变量）                             */
 /* ------------------------------------------------------------------ */
 static uint8_t g_rxByte  = 0;
 static uint8_t s_rxBuf[IMU406_FRAME_LEN];
@@ -35,7 +35,7 @@ volatile IMU406 IMU406_GYRO_Z = 0;
 /* ------------------------------------------------------------------ */
 void IMU406_Init(void)
 {
-    IMU406_UART_INIT();                                  /* 宏：根据 .h 配置自动选 USART2/3 */
+    IMU406_UART_INIT();
     HAL_UART_Receive_IT(IMU406_HUART, &g_rxByte, 1);
 }
 
@@ -93,7 +93,7 @@ static IMU406 DecodeBytes(const uint8_t *p)
 }
 
 /* ------------------------------------------------------------------ */
-/*                   单数据获取函数实现                                 */
+/*                   单数据获取（原始 LSB 值）                          */
 /* ------------------------------------------------------------------ */
 IMU406 IMU406_Get_Roll(void)  { return IMU406_ROLL;   }
 IMU406 IMU406_Get_Pitch(void) { return IMU406_PITCH;  }
@@ -104,3 +104,16 @@ IMU406 IMU406_Get_AccZ(void)  { return IMU406_ACC_Z;  }
 IMU406 IMU406_Get_GyroX(void) { return IMU406_GYRO_X; }
 IMU406 IMU406_Get_GyroY(void) { return IMU406_GYRO_Y; }
 IMU406 IMU406_Get_GyroZ(void) { return IMU406_GYRO_Z; }
+
+/* ------------------------------------------------------------------ */
+/*               ★ 物理量获取（ROS 标准单位）                          */
+/* ------------------------------------------------------------------ */
+float IMU406_Get_GyroX_RadS(void) { return IMU406_GYRO_TO_RAD_S(IMU406_Get_GyroX()); }
+float IMU406_Get_GyroY_RadS(void) { return IMU406_GYRO_TO_RAD_S(IMU406_Get_GyroY()); }
+float IMU406_Get_GyroZ_RadS(void) { return IMU406_GYRO_TO_RAD_S(IMU406_Get_GyroZ()); }
+
+float IMU406_Get_AccX_m_s2(void)  { return IMU406_ACC_TO_M_S2(IMU406_Get_AccX()); }
+float IMU406_Get_AccY_m_s2(void)  { return IMU406_ACC_TO_M_S2(IMU406_Get_AccY()); }
+float IMU406_Get_AccZ_m_s2(void)  { return IMU406_ACC_TO_M_S2(IMU406_Get_AccZ()); }
+
+float IMU406_Get_Yaw_Rad(void)    { return IMU406_ANGLE_TO_RAD(IMU406_Get_Yaw()); }

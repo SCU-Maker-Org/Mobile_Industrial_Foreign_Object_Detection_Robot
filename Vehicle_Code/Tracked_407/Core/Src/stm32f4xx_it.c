@@ -25,6 +25,7 @@
 #include "IMU406.h"
 #include "Tracked.h"
 #include "usart.h"
+#include "alarm.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -58,6 +59,7 @@
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
+extern UART_HandleTypeDef huart1;
 extern UART_HandleTypeDef huart2;
 /* USER CODE BEGIN EV */
 
@@ -186,6 +188,17 @@ void PendSV_Handler(void)
 void SysTick_Handler(void)
 {
   /* USER CODE BEGIN SysTick_IRQn 0 */
+  static uint32_t test = 0;
+
+  test++;
+  if (test >= 10000) test = 0;      /* 每 2 秒一个完整周期 */
+
+  if (test < 5000) {
+    Tracked_SetTargetSpeed(0.5f, 0.0f);   /* 前 1 秒：0.2 m/s */
+  } else {
+    Tracked_SetTargetSpeed(0.0f, 0.0f);   /* 后 1 秒：0.5 m/s */
+  }
+
   Tracked_Tick();
   /* USER CODE END SysTick_IRQn 0 */
   HAL_IncTick();
@@ -200,6 +213,20 @@ void SysTick_Handler(void)
 /* For the available peripheral interrupt handler names,                      */
 /* please refer to the startup file (startup_stm32f4xx.s).                    */
 /******************************************************************************/
+
+/**
+  * @brief This function handles USART1 global interrupt.
+  */
+void USART1_IRQHandler(void)
+{
+  /* USER CODE BEGIN USART1_IRQn 0 */
+
+  /* USER CODE END USART1_IRQn 0 */
+  HAL_UART_IRQHandler(&huart1);
+  /* USER CODE BEGIN USART1_IRQn 1 */
+
+  /* USER CODE END USART1_IRQn 1 */
+}
 
 /**
   * @brief This function handles USART2 global interrupt.
@@ -221,12 +248,21 @@ void USART3_IRQHandler(void)
   HAL_UART_IRQHandler(&huart3);
 }
 
+/* ================================================================== */
+/*                    HAL UART 接收完成回调                            */
+/* ================================================================== */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-  if (huart->Instance == USART2) {
+  if (huart->Instance == USART1) {
+    /* YOLO 数据 → 交给 alarm.c 处理 */
+    YOLO_RxHandler();
+  }
+  else if (huart->Instance == USART2) {
+    /* IMU406 数据 */
     IMU406_Rx_ISR();
   }
   else if (huart->Instance == USART3) {
+    /* ROS2 指令 */
     Tracked_FeedByte(g_ros_rx_byte);
     HAL_UART_Receive_IT(&huart3, &g_ros_rx_byte, 1);
   }

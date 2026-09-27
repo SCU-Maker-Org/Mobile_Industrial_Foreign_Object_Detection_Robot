@@ -8,6 +8,12 @@
 #include <stdint.h>
 #include "main.h"
 #include "PID.h"
+#include "tim.h"
+#include "usart.h"
+#include "IMU406.h"
+#include <string.h>
+#include <math.h>
+#include "alarm.h"
 
 /* ================================================================== */
 /*                     机械参数                                         */
@@ -22,10 +28,34 @@
 /*                     任务周期                                         */
 /* ================================================================== */
 #define TRACKED_PID_PERIOD_MS   50U
-#define TRACKED_IMU_PERIOD_MS   10U
-#define TRACKED_IMU_OFFSET_MS   5U
+#define TRACKED_IMU_PERIOD_MS   10U        /* ★ IMU 以 100Hz 发送 */
 #define TRACKED_ROS_PERIOD_MS   50U
 #define TRACKED_CMD_TIMEOUT_MS  60000U
+
+/* ================================================================== */
+/*                     ★ PID 参数（集中调参）                          */
+/* ================================================================== */
+
+/* ---- 内环：轮子级线速度 PID ---- */
+#define PID_WHEEL_KP            500.0f
+#define PID_WHEEL_KI            50.0f
+#define PID_WHEEL_KD            2.0f
+#define PID_WHEEL_INTEGRAL_LIM  999.0f
+#define PID_WHEEL_OUTPUT_LIM    999.0f
+
+/* ---- 外环：车体线速度 PID ---- */
+#define PID_BODY_V_KP           0.0f      /* ★ 调参阶段先设 0 */
+#define PID_BODY_V_KI           0.0f
+#define PID_BODY_V_KD           0.0f
+#define PID_BODY_V_INTEGRAL_LIM 50.0f
+#define PID_BODY_V_OUTPUT_LIM   0.3f      /* 修正量最大 ±0.3 m/s */
+
+/* ---- 外环：车体角速度 PID ---- */
+#define PID_BODY_W_KP           0.0f      /* ★ 调参阶段先设 0 */
+#define PID_BODY_W_KI           0.0f
+#define PID_BODY_W_KD           0.0f
+#define PID_BODY_W_INTEGRAL_LIM 50.0f
+#define PID_BODY_W_OUTPUT_LIM   0.3f      /* 修正量最大 ±0.3 rad/s */
 
 /* ================================================================== */
 /*                     电机 / 编码器 / 串口 宏                          */
@@ -47,23 +77,41 @@
 /* ================================================================== */
 /*                     ROS 上行帧                                       */
 /* ================================================================== */
+#define TRACKED_UP_HEAD0        0xAAU
+#define TRACKED_UP_HEAD1        0x55U
+#define TRACKED_UP_TYPE_ODOM    0x01U
+#define TRACKED_UP_TYPE_IMU     0x02U
+
+/* ---- 里程计上行帧 ---- */
 typedef struct __attribute__((packed)) {
-    uint8_t  header[2];
-    float    x;
-    float    y;
-    float    yaw;
-    float    v;
-    float    w;
-    float    roll;
-    float    pitch;
-    float    imu_yaw;
-    int32_t  left_cnt;
-    int32_t  right_cnt;
+    uint8_t  header[2];      /* 0xAA 0x55 */
+    uint8_t  type;           /* 0x01 */
+    float    x;              /* 累计 x (m) */
+    float    y;              /* 累计 y (m) */
+    float    yaw;            /* 累计 yaw (rad) */
+    float    v;              /* 线速度 (m/s) */
+    float    w;              /* 角速度 (rad/s) */
+    uint32_t timestamp_ms;
     uint8_t  checksum;
-} Tracked_ROS_Frame_t;
+} Tracked_Odom_Frame_t;
+
+/* ---- IMU 上行帧 ---- */
+typedef struct __attribute__((packed)) {
+    uint8_t  header[2];      /* 0xAA 0x55 */
+    uint8_t  type;           /* 0x02 */
+    float    gyro_x;         /* rad/s */
+    float    gyro_y;         /* rad/s */
+    float    gyro_z;         /* rad/s */
+    float    acc_x;          /* m/s² */
+    float    acc_y;          /* m/s² */
+    float    acc_z;          /* m/s² */
+    float    yaw;            /* rad，IMU 自带角度（融合时可参考） */
+    uint32_t timestamp_ms;
+    uint8_t  checksum;
+} Tracked_Imu_Frame_t;
 
 /* ================================================================== */
-/*                     ROS 下行帧                                       */
+/*                     ROS 下行帧（/cmd_vel）                           */
 /* ================================================================== */
 #define TRACKED_CMD_HEAD0       0xAAU
 #define TRACKED_CMD_HEAD1       0x55U
@@ -89,18 +137,22 @@ typedef struct {
     float gear_ratio;
     float dt;
 
-    float target_v, target_w;
-    float current_v, current_w;
-    float target_vl, target_vr;
-    float current_vl, current_vr;
+    float target_v, target_w;           /* 车体级目标 */
+    float current_v, current_w;         /* 车体级实际 */
+    float target_vl, target_vr;         /* 轮子级目标（保留，调试用） */
+    float current_vl, current_vr;       /* 轮子级实际 */
 
     int32_t delta_left_cnt;
     int32_t delta_right_cnt;
     int32_t total_left_cnt;
     int32_t total_right_cnt;
 
-    PID_Speed_Controller pid_left;
-    PID_Speed_Controller pid_right;
+    PID_Speed_Controller pid_left;      /* 左轮线速度 PID */
+    PID_Speed_Controller pid_right;     /* 右轮线速度 PID */
+
+    /* ★ 车体级 PID */
+    PID_Speed_Controller pid_body_v;    /* 车体线速度 PID */
+    PID_Speed_Controller pid_body_w;    /* 车体角速度 PID */
 
     float odom_x, odom_y, odom_yaw;
 
@@ -128,7 +180,10 @@ void Tracked_InverseKinematics(float v, float w, float *vl, float *vr);
 void Tracked_UpdateEncoder(void);
 void Tracked_PID_Update(void);
 void Tracked_UpdateOdom(void);
-void Tracked_SendToROS(void);
+
+void Tracked_SendOdom(void);
+void Tracked_SendImu(void);
+
 void Tracked_Enable(uint8_t en);
 
 void Tracked_StartRosRx(void);
@@ -136,4 +191,4 @@ void Tracked_FeedByte(uint8_t byte);
 
 extern uint8_t g_ros_rx_byte;
 
-#endif //TRACKED_TRACKED_H
+#endif // TRACKED_TRACKED_H
