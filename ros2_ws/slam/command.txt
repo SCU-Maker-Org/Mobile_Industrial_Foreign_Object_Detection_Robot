@@ -1,0 +1,58 @@
+Start Slam:
+# 赋予两个经过映射的设备执行权限
+sudo chmod 666 /dev/ldlidar
+sudo chmod 666 /dev/motor
+
+# 编译并安装
+colcon build
+source install/local_setup.bash
+
+# 启动ros
+ros2 launch ldlidar_sl_ros2 ld14p.launch.py
+
+python3 ~/ros2_ws/start_slam.py
+
+sudo chmod 666 /dev/ttyUSB0
+
+cd ~/ros2_ws
+
+colcon build --packages-select serial_communication
+
+source install/local_setup.bash
+
+ros2 run serial_communication stm32_reciever
+
+ros2 run serial_communication stm32_sender
+
+rviz2
+
+Start Nav2
+
+sudo chmod 666 /dev/ttyACM0
+
+cd ~/ros2_ws
+
+colcon build
+
+source install/local_setup.bash
+
+ros2 launch ldlidar_sl_ros2 ld14p.launch.py
+
+sudo chmod 666 /dev/ttyUSB0
+
+cd ~/ros2_ws
+
+colcon build --packages-select serial_communication
+
+source install/local_setup.bash
+
+ros2 run serial_communication stm32_reciever
+
+cd ~/ros2_ws
+
+colcon build
+
+source install/local_setup.bash
+
+ros2 launch navigation navigation2.launch.py
+
