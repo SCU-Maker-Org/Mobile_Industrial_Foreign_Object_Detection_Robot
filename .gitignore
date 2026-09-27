@@ -1,1 +1,34 @@
+# ROS2 workspace 编译产物
+ros2_ws/slam/build/
+ros2_ws/slam/install/
+ros2_ws/slam/log/
+
+# 第三方包（各自 git clone，不入库）
 ros2_ws/slam/robot_localization/
+ros2_ws/slam/ldlidar_sl_ros2/
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 编译产物
+*.so
+*.o
+*.a
+*.d
+*.cmake
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ROS 日志
+*.log
+
+# 系统文件
+.DS_Store
+Thumbs.db
