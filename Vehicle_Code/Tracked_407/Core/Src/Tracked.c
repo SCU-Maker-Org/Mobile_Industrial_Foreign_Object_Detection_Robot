@@ -38,13 +38,13 @@ void Tracked_Init(void)
     t->gear_ratio     = TRACKED_GEAR_RATIO;
     t->dt             = TRACKED_DT;
 
-    /* ---- 内环：轮子级 PID ---- */
+    /* ---- 内环：轮子级 PID（左右独立） ---- */
     PID_Speed_Controller_Init(&t->pid_left,
-                              PID_WHEEL_KP, PID_WHEEL_KI, PID_WHEEL_KD,
-                              PID_WHEEL_INTEGRAL_LIM, PID_WHEEL_OUTPUT_LIM);
+                              PID_WHEEL_L_KP, PID_WHEEL_L_KI, PID_WHEEL_L_KD,
+                              PID_WHEEL_L_INTEGRAL_LIM, PID_WHEEL_L_OUTPUT_LIM);
     PID_Speed_Controller_Init(&t->pid_right,
-                              PID_WHEEL_KP, PID_WHEEL_KI, PID_WHEEL_KD,
-                              PID_WHEEL_INTEGRAL_LIM, PID_WHEEL_OUTPUT_LIM);
+                              PID_WHEEL_R_KP, PID_WHEEL_R_KI, PID_WHEEL_R_KD,
+                              PID_WHEEL_R_INTEGRAL_LIM, PID_WHEEL_R_OUTPUT_LIM);
 
     /* ---- 外环：车体级 PID ---- */
     PID_Speed_Controller_Init(&t->pid_body_v,
@@ -71,6 +71,10 @@ void Tracked_Init(void)
     t->rx_state      = TRACKED_RX_WAIT_HEAD0;
     t->rx_index      = 0;
     t->last_cmd_tick = HAL_GetTick();
+
+    /* ★ PWM 初值 */
+    t->pwm_left  = 0;
+    t->pwm_right = 0;
 
     Tracked_StartRosRx();
 
@@ -99,6 +103,10 @@ void Tracked_Tick(void)
         Tracked_PID_Update();
         Tracked_UpdateOdom();
         Tracked_SendOdom();
+
+#if TRACKED_WHEEL_DEBUG_ENABLE
+        Tracked_SendWheelDebug();      /* ★ 只在调试阶段发送 */
+#endif
     }
 
     /* ---- 10ms 任务：IMU 发送（100Hz） ---- */
@@ -160,6 +168,8 @@ void Tracked_PID_Update(void)
 
     if (!t->enabled) {
         Tracked_SetPWM(0, 0);
+        t->pwm_left  = 0;
+        t->pwm_right = 0;
         return;
     }
 
@@ -195,11 +205,15 @@ void Tracked_PID_Update(void)
     t->target_vr = vr_target;
 
     /* ============================================================ */
-    /* 第 3 层：轮子级线速度闭环                                    */
+    /* 第 3 层：轮子级线速度闭环（左右独立 PID）                    */
     /* ============================================================ */
 
     float out_l = PID_Speed_Controller_Update(&t->pid_left,  vl_target, t->current_vl);
     float out_r = PID_Speed_Controller_Update(&t->pid_right, vr_target, t->current_vr);
+
+    /* ★ 保存 PWM，供调试帧使用 */
+    t->pwm_left  = (int16_t)out_l;
+    t->pwm_right = (int16_t)out_r;
 
     Tracked_SetPWM((int16_t)out_l, (int16_t)out_r);
 }
@@ -263,19 +277,53 @@ void Tracked_SendImu(void)
     Tracked_SendBytes((uint8_t *)&frame, sizeof(frame));
 }
 
+/* ================================================================== */
+/*          ★ 轮子调试帧发送（仅 PID 调参阶段使用）                    */
+/*          宏 TRACKED_WHEEL_DEBUG_ENABLE = 0 时整个函数不编译          */
+/* ================================================================== */
+#if TRACKED_WHEEL_DEBUG_ENABLE
+void Tracked_SendWheelDebug(void)
+{
+    Tracked_t *t = &g_tracked;
+
+    Tracked_Wheel_Debug_Frame_t frame;
+    frame.header[0]  = TRACKED_UP_HEAD0;
+    frame.header[1]  = TRACKED_UP_HEAD1;
+    frame.type       = TRACKED_UP_TYPE_WHEEL_DEBUG;
+
+    frame.vl_target  = t->target_vl;
+    frame.vl_actual  = t->current_vl;
+    frame.vr_target  = t->target_vr;
+    frame.vr_actual  = t->current_vr;
+
+    frame.delta_left  = t->delta_left_cnt;
+    frame.delta_right = t->delta_right_cnt;
+
+    frame.pwm_left   = t->pwm_left;
+    frame.pwm_right  = t->pwm_right;
+
+    frame.timestamp_ms = HAL_GetTick();
+    frame.checksum   = Tracked_Checksum((uint8_t *)&frame, sizeof(frame) - 1);
+
+    Tracked_SendBytes((uint8_t *)&frame, sizeof(frame));
+}
+#else
+void Tracked_SendWheelDebug(void) { }   /* 空实现，避免链接报错 */
+#endif
+
 void Tracked_Enable(uint8_t en)
 {
     g_tracked.enabled = en;
     if (!en) {
         Tracked_SetPWM(0, 0);
 
-        /* 重置所有 PID */
+        /* 重置所有 PID（左右独立） */
         PID_Speed_Controller_Init(&g_tracked.pid_left,
-                                  PID_WHEEL_KP, PID_WHEEL_KI, PID_WHEEL_KD,
-                                  PID_WHEEL_INTEGRAL_LIM, PID_WHEEL_OUTPUT_LIM);
+                                  PID_WHEEL_L_KP, PID_WHEEL_L_KI, PID_WHEEL_L_KD,
+                                  PID_WHEEL_L_INTEGRAL_LIM, PID_WHEEL_L_OUTPUT_LIM);
         PID_Speed_Controller_Init(&g_tracked.pid_right,
-                                  PID_WHEEL_KP, PID_WHEEL_KI, PID_WHEEL_KD,
-                                  PID_WHEEL_INTEGRAL_LIM, PID_WHEEL_OUTPUT_LIM);
+                                  PID_WHEEL_R_KP, PID_WHEEL_R_KI, PID_WHEEL_R_KD,
+                                  PID_WHEEL_R_INTEGRAL_LIM, PID_WHEEL_R_OUTPUT_LIM);
 
         PID_Speed_Controller_Init(&g_tracked.pid_body_v,
                                   PID_BODY_V_KP, PID_BODY_V_KI, PID_BODY_V_KD,

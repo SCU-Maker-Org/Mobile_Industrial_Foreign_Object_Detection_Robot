@@ -61,6 +61,7 @@
 /* External variables --------------------------------------------------------*/
 extern UART_HandleTypeDef huart1;
 extern UART_HandleTypeDef huart2;
+extern UART_HandleTypeDef huart3;
 /* USER CODE BEGIN EV */
 
 /* USER CODE END EV */
@@ -188,17 +189,16 @@ void PendSV_Handler(void)
 void SysTick_Handler(void)
 {
   /* USER CODE BEGIN SysTick_IRQn 0 */
-  static uint32_t test = 0;
-
-  test++;
-  if (test >= 10000) test = 0;      /* 每 2 秒一个完整周期 */
-
-  if (test < 5000) {
-    Tracked_SetTargetSpeed(0.5f, 0.0f);   /* 前 1 秒：0.2 m/s */
-  } else {
-    Tracked_SetTargetSpeed(0.0f, 0.0f);   /* 后 1 秒：0.5 m/s */
-  }
-
+  // static uint32_t test = 0;
+  //
+  // test++;
+  // if (test >= 10000) test = 0;      /* 每 2 秒一个完整周期 */
+  //
+  // if (test < 5000) {
+  //   Tracked_SetTargetSpeed(0.5f, 0.0f);   /* 前 1 秒：0.2 m/s */
+  // } else {
+  //   Tracked_SetTargetSpeed(0.0f, 0.0f);   /* 后 1 秒：0.5 m/s */
+  // }
   Tracked_Tick();
   /* USER CODE END SysTick_IRQn 0 */
   HAL_IncTick();
@@ -242,11 +242,21 @@ void USART2_IRQHandler(void)
   /* USER CODE END USART2_IRQn 1 */
 }
 
-/* USER CODE BEGIN 1 */
+/**
+  * @brief This function handles USART3 global interrupt.
+  */
 void USART3_IRQHandler(void)
 {
+  /* USER CODE BEGIN USART3_IRQn 0 */
+
+  /* USER CODE END USART3_IRQn 0 */
   HAL_UART_IRQHandler(&huart3);
+  /* USER CODE BEGIN USART3_IRQn 1 */
+
+  /* USER CODE END USART3_IRQn 1 */
 }
+
+/* USER CODE BEGIN 1 */
 
 /* ================================================================== */
 /*                    HAL UART 接收完成回调                            */
