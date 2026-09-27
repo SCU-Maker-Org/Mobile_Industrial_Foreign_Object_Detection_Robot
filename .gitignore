@@ -5,7 +5,6 @@ ros2_ws/slam/log/
 
 # 第三方包（各自 git clone，不入库）
 ros2_ws/slam/robot_localization/
-ros2_ws/slam/ldlidar_sl_ros2/
 
 # Python 缓存
 __pycache__/
@@ -32,3 +31,7 @@ __pycache__/
 # 系统文件
 .DS_Store
 Thumbs.db
+.git.bak/
+.git.bak2/
+.git.bak3/
+.git.bak*/
