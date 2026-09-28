@@ -12,6 +12,11 @@ static uint8_t s_rxBuf[IMU406_FRAME_LEN];
 static uint8_t s_rxIndex = 0;
 
 /* ------------------------------------------------------------------ */
+/*                ★ Yaw 软件零点偏移（私有）                           */
+/* ------------------------------------------------------------------ */
+static volatile IMU406 s_yaw_offset = 0;
+
+/* ------------------------------------------------------------------ */
 /*                   私有函数声明                                       */
 /* ------------------------------------------------------------------ */
 static void   IMU406_ParseFrame(const uint8_t *frame);
@@ -97,7 +102,17 @@ static IMU406 DecodeBytes(const uint8_t *p)
 /* ------------------------------------------------------------------ */
 IMU406 IMU406_Get_Roll(void)  { return IMU406_ROLL;   }
 IMU406 IMU406_Get_Pitch(void) { return IMU406_PITCH;  }
-IMU406 IMU406_Get_Yaw(void)   { return IMU406_YAW;    }
+
+/* ★ 校正后的 yaw（减掉零点偏移） */
+IMU406 IMU406_Get_Yaw(void)
+{
+    IMU406 raw = IMU406_YAW - s_yaw_offset;
+    /* LSB = 0.01° → 180° = 18000, 360° = 36000 */
+    while (raw >  18000) raw -= 36000;
+    while (raw < -18000) raw += 36000;
+    return raw;
+}
+
 IMU406 IMU406_Get_AccX(void)  { return IMU406_ACC_X;  }
 IMU406 IMU406_Get_AccY(void)  { return IMU406_ACC_Y;  }
 IMU406 IMU406_Get_AccZ(void)  { return IMU406_ACC_Z;  }
@@ -117,3 +132,31 @@ float IMU406_Get_AccY_m_s2(void)  { return IMU406_ACC_TO_M_S2(IMU406_Get_AccY())
 float IMU406_Get_AccZ_m_s2(void)  { return IMU406_ACC_TO_M_S2(IMU406_Get_AccZ()); }
 
 float IMU406_Get_Yaw_Rad(void)    { return IMU406_ANGLE_TO_RAD(IMU406_Get_Yaw()); }
+
+/* ------------------------------------------------------------------ */
+/*               ★ Yaw 零点控制                                        */
+/* ------------------------------------------------------------------ */
+/**
+ * @brief 把当前 yaw 设为零点
+ * @note  可以在任意时刻调用（建议在 ROS /tracked/reset_odom 触发时调用）
+ */
+void IMU406_ZeroYaw(void)
+{
+    s_yaw_offset = IMU406_YAW;
+}
+
+/**
+ * @brief 清除零点偏移，恢复原始输出
+ */
+void IMU406_ResetYawOffset(void)
+{
+    s_yaw_offset = 0;
+}
+
+/**
+ * @brief 原始 yaw（未经零点校正），调试用
+ */
+IMU406 IMU406_Get_YawRaw(void)
+{
+    return IMU406_YAW;
+}

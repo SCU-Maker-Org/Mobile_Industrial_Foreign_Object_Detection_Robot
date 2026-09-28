@@ -85,4 +85,9 @@ float IMU406_Get_AccY_m_s2(void);
 float IMU406_Get_AccZ_m_s2(void);
 float IMU406_Get_Yaw_Rad(void);
 
+/* ★ Yaw 零点控制（软件偏移法） */
+void   IMU406_ZeroYaw(void);            /* 把当前 yaw 设为零点 */
+void   IMU406_ResetYawOffset(void);     /* 清除零点偏移 */
+IMU406 IMU406_Get_YawRaw(void);         /* 原始 yaw（调试用） */
+
 #endif // TRACKED_IMU406_H

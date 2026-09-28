@@ -146,6 +146,7 @@ typedef struct __attribute__((packed)) {
 #define TRACKED_CMD_HEAD0       0xAAU
 #define TRACKED_CMD_HEAD1       0x55U
 #define TRACKED_CMD_TYPE_VEL    0x01U
+#define TRACKED_CMD_TYPE_RESET  0x03U
 #define TRACKED_CMD_TAIL        0x0DU
 #define TRACKED_CMD_FRAME_LEN   13U
 
@@ -219,6 +220,7 @@ void Tracked_SendImu(void);
 void Tracked_SendWheelDebug(void);      /* ★ 轮子调试帧 */
 
 void Tracked_Enable(uint8_t en);
+void Tracked_ResetOdom(void);
 
 void Tracked_StartRosRx(void);
 void Tracked_FeedByte(uint8_t byte);

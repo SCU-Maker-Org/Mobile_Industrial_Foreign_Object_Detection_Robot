@@ -335,6 +335,48 @@ void Tracked_Enable(uint8_t en)
 }
 
 /* ================================================================== */
+/*                     ★ 里程计清零                                     */
+/* ================================================================== */
+void Tracked_ResetOdom(void)
+{
+    Tracked_t *t = &g_tracked;
+
+    /* ---- 位置和朝向归零 ---- */
+    t->odom_x   = 0.0f;
+    t->odom_y   = 0.0f;
+    t->odom_yaw = 0.0f;
+
+    /* ---- 累计编码器计数归零 ---- */
+    t->total_left_cnt  = 0;
+    t->total_right_cnt = 0;
+    t->delta_left_cnt  = 0;
+    t->delta_right_cnt = 0;
+
+    /* ---- 硬件编码器计数器清零 ---- */
+    __HAL_TIM_SET_COUNTER(MOTOR_A_ENCODER_TIM, 0);
+    __HAL_TIM_SET_COUNTER(MOTOR_B_ENCODER_TIM, 0);
+
+    /* ---- 车体/轮子速度估计归零 ---- */
+    t->current_v  = 0.0f;
+    t->current_w  = 0.0f;
+    t->current_vl = 0.0f;
+    t->current_vr = 0.0f;
+
+    /* ---- 清掉 PID 积分，避免清零后突然抖一下 ---- */
+    t->pid_left.integral    = 0.0f;
+    t->pid_right.integral   = 0.0f;
+    t->pid_body_v.integral  = 0.0f;
+    t->pid_body_w.integral  = 0.0f;
+    t->pid_left.last_error  = 0.0f;
+    t->pid_right.last_error = 0.0f;
+    t->pid_body_v.last_error = 0.0f;
+    t->pid_body_w.last_error = 0.0f;
+
+    /* ---- ★ IMU yaw 也清零，消除上电时的磁场偏移 ---- */
+    IMU406_ZeroYaw();
+}
+
+/* ================================================================== */
 /*                     ROS 接收（/cmd_vel）                             */
 /* ================================================================== */
 void Tracked_StartRosRx(void)
@@ -363,13 +405,13 @@ void Tracked_FeedByte(uint8_t byte)
         }
         break;
     case TRACKED_RX_WAIT_TYPE:
-        if (byte == TRACKED_CMD_TYPE_VEL) {
-            buf[2] = byte; t->rx_index = 3;
-            t->rx_state = TRACKED_RX_WAIT_DATA;
-        } else {
-            t->rx_state = TRACKED_RX_WAIT_HEAD0;
-        }
-        break;
+         if (byte == TRACKED_CMD_TYPE_VEL || byte == TRACKED_CMD_TYPE_RESET) {
+             buf[2] = byte; t->rx_index = 3;
+             t->rx_state = TRACKED_RX_WAIT_DATA;
+         } else {
+             t->rx_state = TRACKED_RX_WAIT_HEAD0;
+         }
+         break;
     case TRACKED_RX_WAIT_DATA:
         buf[t->rx_index++] = byte;
         if (t->rx_index >= 12U) t->rx_state = TRACKED_RX_WAIT_TAIL;
@@ -398,15 +440,22 @@ static void Tracked_ParseCmd(const uint8_t *buf)
     for (uint8_t i = 0; i < 11U; i++) sum ^= buf[i];
     if (sum != buf[11]) return;
 
-    float v, w;
-    memcpy(&v, &buf[3], 4);
-    memcpy(&w, &buf[7], 4);
+    if (buf[2] == TRACKED_CMD_TYPE_VEL) {
+        /* ---- 速度命令 ---- */
+        float v, w;
+        memcpy(&v, &buf[3], 4);
+        memcpy(&w, &buf[7], 4);
 
-    Tracked_SetTargetSpeed(v, w);
+        Tracked_SetTargetSpeed(v, w);
 
-    g_tracked.last_cmd_tick = HAL_GetTick();
-    g_tracked.cmd_timeout   = 0;
-    g_tracked.cmd_received_flag = 1;
+        g_tracked.last_cmd_tick = HAL_GetTick();
+        g_tracked.cmd_timeout   = 0;
+        g_tracked.cmd_received_flag = 1;
+    }
+    else if (buf[2] == TRACKED_CMD_TYPE_RESET) {
+        /* ---- ★ 里程计清零命令 ---- */
+        Tracked_ResetOdom();
+    }
 }
 
 static void Tracked_SetPWM(int16_t left, int16_t right)
