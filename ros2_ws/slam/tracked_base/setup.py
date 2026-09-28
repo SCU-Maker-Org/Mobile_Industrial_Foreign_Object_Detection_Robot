@@ -26,6 +26,7 @@ setup(
     entry_points={
         'console_scripts': [
             'stm32_bridge = tracked_base.stm32_bridge:main',
+            'scan_filter = tracked_base.scan_filter:main',
         ],
     },
 )

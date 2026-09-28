@@ -10,7 +10,7 @@ colcon build --symlink-install
 source install/setup.bash
 
 # 每次启动（4个终端）
-终端一——底盘+EKF+SLAM
+终端一——底盘（重置命令+串口通信）+EKF+SLAM
 cd ~/Mobile_Industrial_Foreign_Object_Detection_Robot/ros2_ws/slam
 source install/setup.bash
 ros2 launch tracked_base bringup.launch.py port:=/dev/motor
@@ -28,4 +28,5 @@ rviz2 -d ~/tracked_slam.rviz
 终端四——遥控
 cd ~/Mobile_Industrial_Foreign_Object_Detection_Robot/ros2_ws/slam
 source install/setup.bash
-ros2 run teleop_twist_keyboard teleop_twist_keyboard
+ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args \
+  -p speed:=0.2 -p turn:=0.5

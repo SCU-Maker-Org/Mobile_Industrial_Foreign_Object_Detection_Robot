@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-STM32 双向串口桥接节点（与 Tracked.c/Tracked.h 协议严格一致）
+STM32 双向串口桥接节点
 
 上行 (STM32 -> ROS2, USART3, 230400):
   - 里程计帧 type=0x01  长度 28
   - IMU 帧   type=0x02  长度 36
+
 下行 (ROS2 -> STM32):
-  - /cmd_vel -> 13 字节帧
-校验：XOR
+  - /cmd_vel            -> 13 字节帧, type=0x01
+  - /tracked/reset_odom -> 13 字节帧, type=0x03
+
+校验：XOR（与 Tracked.c 中 Tracked_Checksum 一致）
 """
 
 import math
@@ -25,19 +28,24 @@ import serial
 from geometry_msgs.msg import Twist, TransformStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
+from std_srvs.srv import Trigger
 from tf2_ros import TransformBroadcaster
 
 
+# ============================================================
+# 协议常量（与 Tracked.h 严格一致）
+# ============================================================
 UP_HEAD0 = 0xAA
 UP_HEAD1 = 0x55
 UP_TYPE_ODOM = 0x01
 UP_TYPE_IMU  = 0x02
 
-CMD_HEAD0 = 0xAA
-CMD_HEAD1 = 0x55
-CMD_TYPE_VEL = 0x01
-CMD_TAIL = 0x0D
-CMD_FRAME_LEN = 13
+CMD_HEAD0       = 0xAA
+CMD_HEAD1       = 0x55
+CMD_TYPE_VEL    = 0x01
+CMD_TYPE_RESET  = 0x03
+CMD_TAIL        = 0x0D
+CMD_FRAME_LEN   = 13
 
 ODOM_FRAME_LEN = 28
 IMU_FRAME_LEN  = 36
@@ -69,7 +77,8 @@ class STM32Bridge(Node):
     def __init__(self):
         super().__init__('stm32_bridge')
 
-        self.declare_parameter('port', '/dev/ttyUSB0')
+        # -------- 参数 --------
+        self.declare_parameter('port', '/dev/motor')
         self.declare_parameter('baudrate', 230400)
         self.declare_parameter('odom_frame', 'odom')
         self.declare_parameter('base_frame', 'base_footprint')
@@ -85,20 +94,28 @@ class STM32Bridge(Node):
         self.publish_tf = self.get_parameter('publish_tf').value
         cmd_topic       = self.get_parameter('cmd_vel_topic').value
 
+        # -------- QoS --------
         sensor_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
             depth=20
         )
 
+        # -------- 发布者 --------
         self.pub_odom = self.create_publisher(Odometry, 'odom_raw', sensor_qos)
         self.pub_imu  = self.create_publisher(Imu, 'imu/data_raw', sensor_qos)
 
+        # -------- 订阅者 --------
         self.create_subscription(Twist, cmd_topic, self.cmd_vel_callback, 10)
 
+        # -------- 清零 service --------
+        self.create_service(Trigger, '/tracked/reset_odom', self.handle_reset_odom)
+
+        # -------- TF --------
         if self.publish_tf:
             self.tf_broadcaster = TransformBroadcaster(self)
 
+        # -------- 串口 --------
         try:
             self.ser = serial.Serial(
                 port=port, baudrate=baudrate,
@@ -112,6 +129,7 @@ class STM32Bridge(Node):
             self.get_logger().error(f'串口打开失败: {e}')
             raise
 
+        # -------- 状态 --------
         self.buf = bytearray()
         self.running = True
         self.write_lock = threading.Lock()
@@ -120,9 +138,11 @@ class STM32Bridge(Node):
         self.imu_count = 0
         self.err_count = 0
 
+        # -------- 读线程 --------
         self.rx_thread = threading.Thread(target=self.rx_loop, daemon=True)
         self.rx_thread.start()
 
+        # -------- 统计定时器 --------
         self.create_timer(5.0, self.stats_callback)
 
         self.get_logger().info('=' * 50)
@@ -132,8 +152,11 @@ class STM32Bridge(Node):
         self.get_logger().info(f'  base_frame = {self.base_frame}')
         self.get_logger().info(f'  imu_frame  = {self.imu_frame}')
         self.get_logger().info(f'  publish_tf = {self.publish_tf}')
+        self.get_logger().info(f'  cmd_vel    = {cmd_topic}')
+        self.get_logger().info('  reset      = /tracked/reset_odom (Trigger)')
         self.get_logger().info('=' * 50)
 
+    # ============================================================
     def rx_loop(self):
         while self.running and rclpy.ok():
             try:
@@ -151,6 +174,7 @@ class STM32Bridge(Node):
                 self.get_logger().error(f'RX 异常: {e}')
                 time.sleep(0.5)
 
+    # ============================================================
     def parse_buffer(self):
         while True:
             if len(self.buf) < 3:
@@ -189,6 +213,7 @@ class STM32Bridge(Node):
                 self.handle_imu(frame)
             self.buf = self.buf[flen:]
 
+    # ============================================================
     def handle_odom(self, frame: bytes):
         (_hdr, _type,
          x, y, yaw, v, w,
@@ -247,6 +272,7 @@ class STM32Bridge(Node):
             t.transform.rotation.w = qw
             self.tf_broadcaster.sendTransform(t)
 
+    # ============================================================
     def handle_imu(self, frame: bytes):
         (_hdr, _type,
          gx, gy, gz,
@@ -289,6 +315,7 @@ class STM32Bridge(Node):
         self.pub_imu.publish(imu)
         self.imu_count += 1
 
+    # ============================================================
     def cmd_vel_callback(self, msg: Twist):
         v = max(min(float(msg.linear.x),  1.0), -1.0)
         w = max(min(float(msg.angular.z), 3.0), -3.0)
@@ -308,11 +335,48 @@ class STM32Bridge(Node):
             except serial.SerialException as e:
                 self.get_logger().error(f'串口写入失败: {e}')
 
+    # ============================================================
+    def handle_reset_odom(self, request, response):
+        """清零 STM32 里程计：type=0x03，格式与 cmd_vel 完全一致"""
+        frame = bytearray(CMD_FRAME_LEN)
+        frame[0] = CMD_HEAD0
+        frame[1] = CMD_HEAD1
+        frame[2] = CMD_TYPE_RESET
+        # frame[3..10] 保留位 = 0
+        frame[11] = xor_checksum(frame[:11])
+        frame[12] = CMD_TAIL
+
+        ok = True
+        errmsg = 'odom reset sent (x3)'
+        with self.write_lock:
+            for i in range(3):   # 连发 3 次防丢帧
+                try:
+                    self.ser.write(frame)
+                    self.get_logger().debug(
+                        f'  reset frame {i+1}/3: {frame.hex(" ").upper()}'
+                    )
+                except serial.SerialException as e:
+                    ok = False
+                    errmsg = str(e)
+                    self.get_logger().error(f'清零指令发送失败: {e}')
+                    break
+                time.sleep(0.05)
+
+        if ok:
+            self.get_logger().info(
+                f'已发送里程计清零指令 type=0x03 帧: {frame.hex(" ").upper()}'
+            )
+        response.success = ok
+        response.message = errmsg
+        return response
+
+    # ============================================================
     def stats_callback(self):
         self.get_logger().info(
             f'[stats] odom={self.odom_count} imu={self.imu_count} err={self.err_count}'
         )
 
+    # ============================================================
     def destroy_node(self):
         self.running = False
         if self.rx_thread.is_alive():

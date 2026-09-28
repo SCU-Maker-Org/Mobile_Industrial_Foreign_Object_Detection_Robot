@@ -13,11 +13,16 @@ def generate_launch_description():
     ekf_config  = os.path.join(pkg_share, 'config', 'ekf.yaml')
     slam_config = os.path.join(pkg_share, 'config', 'slam.yaml')
 
-    port_arg     = DeclareLaunchArgument('port',     default_value='/dev/motor')
-    baud_arg     = DeclareLaunchArgument('baudrate', default_value='230400')
-    use_ekf_arg  = DeclareLaunchArgument('use_ekf',  default_value='true')
-    use_slam_arg = DeclareLaunchArgument('use_slam', default_value='true')
+    # ---------- launch 参数 ----------
+    port_arg       = DeclareLaunchArgument('port',       default_value='/dev/motor')
+    baud_arg       = DeclareLaunchArgument('baudrate',   default_value='230400')
+    use_ekf_arg    = DeclareLaunchArgument('use_ekf',    default_value='true')
+    use_slam_arg   = DeclareLaunchArgument('use_slam',   default_value='true')
+    use_filter_arg = DeclareLaunchArgument('use_filter', default_value='true')
+    crop_arg       = DeclareLaunchArgument(
+        'crop_ranges_deg', default_value='[-45.0, 45.0]')
 
+    # ---------- STM32 桥接 ----------
     bridge = Node(
         package='tracked_base',
         executable='stm32_bridge',
@@ -33,6 +38,21 @@ def generate_launch_description():
         }]
     )
 
+    # ---------- 激光角度过滤 ----------
+    scan_filter = Node(
+        package='tracked_base',
+        executable='scan_filter',
+        name='scan_filter',
+        output='screen',
+        parameters=[{
+            'input_topic':     '/scan',
+            'output_topic':    '/scan_filtered',
+            'crop_ranges_deg': LaunchConfiguration('crop_ranges_deg'),
+        }],
+        condition=IfCondition(LaunchConfiguration('use_filter')),
+    )
+
+    # ---------- EKF ----------
     ekf = Node(
         package='robot_localization',
         executable='ekf_node',
@@ -42,6 +62,7 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('use_ekf')),
     )
 
+    # ---------- SLAM ----------
     slam = Node(
         package='slam_toolbox',
         executable='async_slam_toolbox_node',
@@ -51,6 +72,7 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('use_slam')),
     )
 
+    # ---------- 静态 TF ----------
     tf_imu = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
@@ -62,6 +84,10 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        port_arg, baud_arg, use_ekf_arg, use_slam_arg,
-        bridge, ekf, slam, tf_imu,
+        port_arg, baud_arg, use_ekf_arg, use_slam_arg, use_filter_arg, crop_arg,
+        bridge,
+        scan_filter,
+        ekf,
+        slam,
+        tf_imu,
     ])

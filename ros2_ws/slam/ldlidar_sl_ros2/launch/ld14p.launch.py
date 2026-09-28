@@ -35,7 +35,6 @@ def generate_launch_description():
         {'frame_id': 'base_laser'},
         {'port_name': '/dev/ldlidar'},
         {'serial_baudrate' : 230400},
-        {'laser_scan_dir': True},
         {'enable_angle_crop_func': False},
         {'scan_publish_freq': 5.0} 
       ]
